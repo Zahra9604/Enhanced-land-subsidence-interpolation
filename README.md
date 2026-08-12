@@ -52,3 +52,19 @@ ReLU activations (hidden layers)
 Linear activation (output)
 
 “The CNN has 31 layers… including three 1×1 convolutional layers, three 3×3 convolutional layers… and fully connected layers with 1024, 512, and 256 ReLU neurons.”
+
+What the resulting map will look like:
+
+Original raster
+┌──────────────────────────────┐
+│ N N N N N N N N N N N N N   │
+│ N ┌──────────────────────┐ N │
+│ N │                      │ N │
+│ N │   CNN predictions    │ N │
+│ N │                      │ N │
+│ N └──────────────────────┘ N │
+│ N N N N N N N N N N N N N   │
+└──────────────────────────────┘
+
+N = NoData
+

@@ -51,7 +51,7 @@ lon=df['LON']
 lat=list(lat)
 lon=list(lon)
 utmx, utmy = p(lon,lat)
-# Load raster data as drivinf forces of land subsidence
+# Load raster data as driving forces of land subsidence
 dataset_path_raster = glob(os.path.join(dataset_path, '*.tif'))
 imgs = [rio.open(path) for path in dataset_path_raster]
 

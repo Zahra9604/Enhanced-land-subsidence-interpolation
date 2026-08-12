@@ -1,21 +1,51 @@
+
 # ============================================================
-# Required libraries
+# CNN WHOLE-AREA LAND SUBSIDENCE PREDICTION
+# ============================================================
+#
+# Input:
+#   9 aligned raster layers
+#
+# CNN input:
+#   30 x 30 x 9
+#
+# Output:
+#   Whole-area subsidence prediction GeoTIFF
+#
+# The prediction raster keeps:
+#   - same CRS
+#   - same transform
+#   - same resolution
+#   - same dimensions
+#   - same spatial extent
+#
+# ============================================================
+
+
+# ============================================================
+# 1. IMPORT LIBRARIES
 # ============================================================
 
 import os
 import numpy as np
 import rasterio as rio
-from rasterio.windows import Window
+
 from sklearn.preprocessing import MinMaxScaler
+
 from tensorflow.keras.models import load_model
 from glob import glob
 
 # ============================================================
-# Paths
+# 2. PATHS
 # ============================================================
 
 root = os.path.dirname(os.getcwd())
-dataset_path = os.path.join(root, "data")
+
+dataset_path = os.path.join(
+    root,
+    "data"
+)
+dataset_path_raster = glob(os.path.join(dataset_path, '*_aligned.tif'))
 
 model_path = os.path.join(
     dataset_path,
@@ -23,75 +53,178 @@ model_path = os.path.join(
 )
 
 output_path = os.path.join(
-    root,'results',
-    "subsidence_prediction.tif"
+    'results',
+    "CNN_subsidence_prediction.tif"
 )
 
 
 # ============================================================
-# Parameters
+# 3. PARAMETERS
 # ============================================================
 
 WINDOW_SIZE = 30
+
 HALF_WINDOW = WINDOW_SIZE // 2
 
-BATCH_SIZE = 128
+BATCH_SIZE = 4096
 
-# Your training labels were:
-# ydata2 = CUMUL_DISP / 10
+# ------------------------------------------------------------
+# IMPORTANT
 #
-# Therefore, multiply predictions by 10 if you
-# want the original CUMUL_DISP units.
-OUTPUT_MULTIPLIER = -10.0
+# During training:
+# We have only subsidence (negative values), there aren't uplift in our data. So we used abs.
+# If you have both uplift and subsidence, you don't use abs. You should use scaling that is appropriate for your data.
+# ydata2 = abs(CUMUL_DISP / 10)
+#
+# Therefore model predictions are multiplied by -10
+# to return to the original CUMUL_DISP units.
+# ------------------------------------------------------------
+
+TARGET_MULTIPLIER = -10.0
 
 
 # ============================================================
-# Load trained model
+# 4. INPUT RASTER ORDER
 # ============================================================
-
-print("Loading trained model...")
-
-model = load_model(model_path)
-
-print("Model loaded successfully.")
-
-
+#
+# VERY IMPORTANT:
+#
+# These must be in EXACTLY the same order as the 9 channels
+# used when train_data.npy was created.
+# Do NOT mix original rasters such as:
+#
+#     aspect.tif
+#
+# with aligned rasters such as:
+#
+#     aspect_aligned.tif
+#
 # ============================================================
-# Load the 9 aligned rasters
-# ============================================================
-
-# IMPORTANT:
-# These must be the SAME 9 rasters and in the SAME ORDER
-# as used when creating train_data.npy.
-# ============================================================
-# Extract image names from the dataset paths
-# ============================================================
-# Load raster data as drivinf forces of land subsidence
-dataset_path_raster = glob(os.path.join(dataset_path, '*_aligned.tif'))
+# Load raster data as driving forces of land subsidence
 imgs = [rio.open(path) for path in dataset_path_raster]
 
 print("Loaded raster datasets:")
 for img in imgs:
     print(f" - {img.name} with shape {img.shape} and CRS {img.crs}")
 
-image_names = [
-    os.path.basename(path)
-    for path in dataset_path_raster
-]
+# Extract image names from the dataset paths
+raster_names = [os.path.basename(path) for path in dataset_path_raster]
 
-# Create dictionary:
-# filename → raster dataset
+# ============================================================
+# 5. CHECK NUMBER OF INPUT RASTERS
+# ============================================================
 
-rasters = dict(zip(image_names, imgs))
+if len(raster_names) != 9:
+
+    raise ValueError(
+        f"Exactly 9 rasters are required. "
+        f"Found {len(raster_names)}."
+    )
 
 
 # ============================================================
-# Check raster alignment
+# 6. CHECK FILES EXIST
 # ============================================================
 
-# Use the first raster as the reference
-reference_name = image_names[0]
+raster_paths = []
+
+for name in raster_names:
+
+    path = os.path.join(
+        dataset_path,
+        name
+    )
+
+    if not os.path.exists(path):
+
+        raise FileNotFoundError(
+            f"\nRaster not found:\n{path}"
+        )
+
+    raster_paths.append(path)
+
+
+# ============================================================
+# 7. LOAD TRAINED CNN MODEL
+# ============================================================
+
+print("\n============================================================")
+print("Loading trained CNN model")
+print("============================================================")
+
+print("Model:", model_path)
+
+model = load_model(
+    model_path,
+    compile=False
+)
+
+print("Model loaded successfully.")
+
+
+# ============================================================
+# 8. CHECK MODEL INPUT
+# ============================================================
+
+print("\nModel input shape:")
+print(model.input_shape)
+
+print("\nModel output shape:")
+print(model.output_shape)
+
+
+expected_shape = (None, 30, 30, 9)
+
+if model.input_shape != expected_shape:
+
+    print(
+        "\nWARNING:"
+        "\nExpected model input:"
+        f" {expected_shape}"
+        "\nActual model input:"
+        f" {model.input_shape}"
+    )
+
+
+# ============================================================
+# 9. OPEN RASTERS
+# ============================================================
+
+print("\n============================================================")
+print("Opening input rasters")
+print("============================================================")
+
+rasters = {}
+
+for name, path in zip(
+    raster_names,
+    raster_paths
+):
+
+    rasters[name] = rio.open(path)
+
+    print(
+        f"{name}: "
+        f"{rasters[name].height} x "
+        f"{rasters[name].width}"
+    )
+
+
+# ============================================================
+# 10. DEFINE REFERENCE RASTER
+# ============================================================
+#
+# The reference must be one of the ALIGNED rasters.
+#
+# Your preprocessing used the aligned water-table raster
+# as the reference grid.
+#
+# ============================================================
+
+reference_name = "watertable_aligned.tif"
+
 reference = rasters[reference_name]
+
 
 height = reference.height
 width = reference.width
@@ -99,197 +232,173 @@ width = reference.width
 reference_transform = reference.transform
 reference_crs = reference.crs
 
-print("\nReference raster:")
+
+print("\n============================================================")
+print("Reference raster")
+print("============================================================")
+
 print("Name:", reference_name)
 print("Height:", height)
 print("Width:", width)
 print("CRS:", reference_crs)
-print("Transform:", reference_transform)
+print("Transform:")
+print(reference_transform)
 
 
 # ============================================================
-# Check all rasters against reference
+# 11. CHECK ALL RASTERS ARE ALIGNED
 # ============================================================
+
+print("\n============================================================")
+print("Checking raster alignment")
+print("============================================================")
 
 for name, raster in rasters.items():
 
+    print(
+        f"{name}: "
+        f"shape={raster.shape}, "
+        f"CRS={raster.crs}"
+    )
+
+    # --------------------------------------------------------
+    # Shape
+    # --------------------------------------------------------
+
     if raster.shape != reference.shape:
+
         raise ValueError(
-            f"Shape mismatch:\n"
-            f"{raster.name}: {raster.shape}\n"
-            f"Reference: {reference.shape}"
+            "\nShape mismatch:\n"
+            f"{name}: {raster.shape}\n"
+            f"Reference: {reference.shape}\n\n"
+            "Use only the *_aligned.tif rasters."
         )
+
+    # --------------------------------------------------------
+    # Transform
+    # --------------------------------------------------------
 
     if raster.transform != reference_transform:
+
         raise ValueError(
-            f"Transform mismatch:\n"
-            f"{raster.name}"
+            "\nTransform mismatch:\n"
+            f"{name}\n"
+            f"Transform: {raster.transform}\n"
+            f"Reference: {reference_transform}"
         )
+
+    # --------------------------------------------------------
+    # CRS
+    # --------------------------------------------------------
 
     if raster.crs != reference_crs:
+
         raise ValueError(
-            f"CRS mismatch:\n"
-            f"{raster.name}"
+            "\nCRS mismatch:\n"
+            f"{name}: {raster.crs}\n"
+            f"Reference: {reference_crs}"
         )
 
 
-print("\nAll rasters are aligned.")
+print("\nAll 9 rasters are perfectly aligned.")
 
 
 # ============================================================
-# Read raster data
+# 12. READ RASTERS
 # ============================================================
 
-print("\nReading rasters...")
+print("\n============================================================")
+print("Reading raster data")
+print("============================================================")
 
 raster_arrays = []
 
-for name, raster in rasters.items():
+for name in raster_names:
 
-    arr = raster.read(1).astype(np.float32)
+    arr = rasters[name].read(
+        1
+    ).astype(
+        np.float32
+    )
 
-    raster_arrays.append(arr)
+    raster_arrays.append(
+        arr
+    )
+
+    finite_values = arr[
+        np.isfinite(arr)
+    ]
 
     print(
         f"{name}: "
         f"shape={arr.shape}, "
-        f"min={np.nanmin(arr):.4f}, "
-        f"max={np.nanmax(arr):.4f}"
-    )
-# ============================================================
-# Check number of input rasters
-# ============================================================
-
-if len(raster_paths) != 9:
-    raise ValueError(
-        f"Expected 9 input rasters, but found {len(raster_paths)}."
+        f"min={finite_values.min():.6f}, "
+        f"max={finite_values.max():.6f}"
     )
 
 
 # ============================================================
-# Open rasters
+# 13. NORMALIZE RASTERS
+# ============================================================
+#
+# This reproduces the normalization used in your training code:
+#
+#     scaler = MinMaxScaler(feature_range=(0, 1))
+#     normalized[name] = scaler.fit_transform(raster)
+#
 # ============================================================
 
-rasters = []
-
-for path in raster_paths:
-
-    if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"Raster not found:\n{path}"
-        )
-
-    rasters.append(rio.open(path))
-
-
-print("\nInput rasters:")
-
-for raster in rasters:
-    print(
-        f"{os.path.basename(raster.name)} | "
-        f"shape={raster.shape} | "
-        f"CRS={raster.crs}"
-    )
-
-
-# ============================================================
-# Check raster alignment
-# ============================================================
-
-reference = rasters[0]
-
-height = reference.height
-width = reference.width
-
-reference_transform = reference.transform
-reference_crs = reference.crs
-
-print("\nReference raster:")
-print("Height:", height)
-print("Width:", width)
-print("CRS:", reference_crs)
-print("Transform:", reference_transform)
-
-
-for raster in rasters:
-
-    if raster.shape != reference.shape:
-        raise ValueError(
-            f"Shape mismatch:\n"
-            f"{raster.name}: {raster.shape}\n"
-            f"Reference: {reference.shape}"
-        )
-
-    if raster.transform != reference_transform:
-        raise ValueError(
-            f"Transform mismatch:\n"
-            f"{raster.name}"
-        )
-
-    if raster.crs != reference_crs:
-        raise ValueError(
-            f"CRS mismatch:\n"
-            f"{raster.name}"
-        )
-
-
-print("\nAll rasters are aligned.")
-
-
-# ============================================================
-# Read raster data
-# ============================================================
-
-print("\nReading rasters...")
-
-raster_arrays = []
-
-for raster in rasters:
-
-    arr = raster.read(1).astype(np.float32)
-
-    raster_arrays.append(arr)
-
-    print(
-        f"{os.path.basename(raster.name)}: "
-        f"min={np.nanmin(arr):.4f}, "
-        f"max={np.nanmax(arr):.4f}"
-    )
-
-
-# ============================================================
-# Normalize rasters
-# ============================================================
-
-print("\nNormalizing rasters...")
+print("\n============================================================")
+print("Normalizing rasters")
+print("============================================================")
 
 normalized_arrays = []
 
-for arr in raster_arrays:
+
+for name, arr in zip(
+    raster_names,
+    raster_arrays
+):
 
     scaler = MinMaxScaler(
         feature_range=(0, 1)
     )
 
-    # IMPORTANT:
-    # This reproduces your training code:
-    #
-    # scaler.fit_transform(raster)
+    # --------------------------------------------------------
+    # Match training preprocessing
+    # --------------------------------------------------------
 
-    normalized = scaler.fit_transform(arr)
-
-    normalized = normalized.astype(
+    normalized = scaler.fit_transform(
+        arr
+    ).astype(
         np.float32
     )
 
-    normalized_arrays.append(normalized)
+    normalized_arrays.append(
+        normalized
+    )
+
+    print(
+        f"{name}: "
+        f"normalized min="
+        f"{normalized.min():.6f}, "
+        f"max="
+        f"{normalized.max():.6f}"
+    )
 
 
-print("Normalization completed.")
+print("\nNormalization completed.")
 
 
 # ============================================================
-# Create prediction map
+# 14. CREATE OUTPUT ARRAY
+# ============================================================
+#
+# Initialize everything as NoData.
+#
+# Predictions will be written only where a complete
+# 30 x 30 window is available.
+#
 # ============================================================
 
 prediction_map = np.full(
@@ -300,145 +409,294 @@ prediction_map = np.full(
 
 
 # ============================================================
-# Valid prediction area
+# 15. VALID PREDICTION AREA
 # ============================================================
 
-# Because the model requires a complete 30 × 30 window,
-# predictions cannot be made for the outer 15 pixels.
-
 row_start = HALF_WINDOW
+
 row_end = height - HALF_WINDOW
 
 col_start = HALF_WINDOW
+
 col_end = width - HALF_WINDOW
 
 
-print("\nPrediction area:")
+prediction_height = (
+    row_end - row_start
+)
+
+prediction_width = (
+    col_end - col_start
+)
+
+total_predictions = (
+    prediction_height *
+    prediction_width
+)
+
+
+print("\n============================================================")
+print("Prediction area")
+print("============================================================")
+
 print(
-    f"Rows: {row_start} → {row_end - 1}"
+    f"Rows:    {row_start} -> {row_end - 1}"
 )
 
 print(
-    f"Columns: {col_start} → {col_end - 1}"
+    f"Columns: {col_start} -> {col_end - 1}"
+)
+
+print(
+    f"Prediction size: "
+    f"{prediction_height} x "
+    f"{prediction_width}"
+)
+
+print(
+    f"Total predictions: "
+    f"{total_predictions:,}"
 )
 
 
 # ============================================================
-# Generate predictions row by row
+# 16. PREPARE BATCH PREDICTION
+# ============================================================
+#
+# Instead of calling model.predict() for every pixel,
+# patches are extracted in large batches.
+#
+# This is much faster on the RTX 5080.
+#
 # ============================================================
 
-print("\nStarting whole-area prediction...")
+print("\n============================================================")
+print("Starting whole-area prediction")
+print("============================================================")
 
-for row in range(row_start, row_end):
 
-    batch_x = []
-    batch_locations = []
+# ------------------------------------------------------------
+# Create row coordinates
+# ------------------------------------------------------------
 
-    for col in range(col_start, col_end):
+rows = np.arange(
+    row_start,
+    row_end,
+    dtype=np.int32
+)
+
+cols = np.arange(
+    col_start,
+    col_end,
+    dtype=np.int32
+)
+
+
+# ============================================================
+# 17. PROCESS ROW BLOCKS
+# ============================================================
+#
+# We process several rows at once.
+#
+# This avoids creating all ~9.4 million patches
+# simultaneously in RAM.
+#
+# ============================================================
+
+ROW_BLOCK_SIZE = 32
+
+processed = 0
+
+
+for block_start in range(
+    0,
+    len(rows),
+    ROW_BLOCK_SIZE
+):
+
+    block_rows = rows[
+        block_start:
+        block_start + ROW_BLOCK_SIZE
+    ]
+
+    # --------------------------------------------------------
+    # Number of rows in this block
+    # --------------------------------------------------------
+
+    n_rows = len(
+        block_rows
+    )
+
+    n_cols = len(
+        cols
+    )
+
+    n_samples = (
+        n_rows *
+        n_cols
+    )
+
+    # --------------------------------------------------------
+    # Allocate block input
+    #
+    # Shape:
+    #
+    # (samples, 30, 30, 9)
+    #
+    # --------------------------------------------------------
+
+    X_block = np.empty(
+        (
+            n_samples,
+            WINDOW_SIZE,
+            WINDOW_SIZE,
+            9
+        ),
+        dtype=np.float32
+    )
+
+    # --------------------------------------------------------
+    # Construct patches
+    # --------------------------------------------------------
+
+    sample_index = 0
+
+    for row in block_rows:
 
         r0 = row - HALF_WINDOW
+
         r1 = row + HALF_WINDOW
 
-        c0 = col - HALF_WINDOW
-        c1 = col + HALF_WINDOW
+        for col in cols:
 
-        # ----------------------------------------------------
-        # Extract 30 × 30 × 9 patch
-        # ----------------------------------------------------
+            c0 = col - HALF_WINDOW
 
-        patch = np.stack(
-            [
-                normalized_arrays[channel][
+            c1 = col + HALF_WINDOW
+
+            # ------------------------------------------------
+            # Stack the nine raster channels
+            # ------------------------------------------------
+
+            for channel in range(9):
+
+                X_block[
+                    sample_index,
+                    :,
+                    :,
+                    channel
+                ] = normalized_arrays[channel][
                     r0:r1,
                     c0:c1
                 ]
-                for channel in range(9)
-            ],
-            axis=-1
+
+            sample_index += 1
+
+
+    # ========================================================
+    # 18. PREDICT CURRENT BLOCK IN BATCHES
+    # ========================================================
+
+    predictions = []
+
+    for batch_start in range(
+        0,
+        n_samples,
+        BATCH_SIZE
+    ):
+
+        batch_end = min(
+            batch_start + BATCH_SIZE,
+            n_samples
         )
 
-        batch_x.append(patch)
-        batch_locations.append((row, col))
+        X_batch = X_block[
+            batch_start:batch_end
+        ]
 
-        # ----------------------------------------------------
-        # Predict when batch is full
-        # ----------------------------------------------------
-
-        if len(batch_x) == BATCH_SIZE:
-
-            batch_x = np.asarray(
-                batch_x,
-                dtype=np.float32
-            )
-
-            predictions = model.predict(
-                batch_x,
-                verbose=0
-            ).reshape(-1)
-
-            # Convert back to original target units
-            predictions *= OUTPUT_MULTIPLIER
-
-            for (r, c), prediction in zip(
-                batch_locations,
-                predictions
-            ):
-                prediction_map[r, c] = prediction
-
-            batch_x = []
-            batch_locations = []
-
-    # --------------------------------------------------------
-    # Predict remaining patches in this row
-    # --------------------------------------------------------
-
-    if len(batch_x) > 0:
-
-        batch_x = np.asarray(
-            batch_x,
-            dtype=np.float32
-        )
-
-        predictions = model.predict(
-            batch_x,
+        pred_batch = model.predict(
+            X_batch,
+            batch_size=BATCH_SIZE,
             verbose=0
+        )
+
+        pred_batch = np.asarray(
+            pred_batch
         ).reshape(-1)
 
-        predictions *= OUTPUT_MULTIPLIER
-
-        for (r, c), prediction in zip(
-            batch_locations,
-            predictions
-        ):
-            prediction_map[r, c] = prediction
-
-    # --------------------------------------------------------
-    # Progress
-    # --------------------------------------------------------
-
-    if row % 25 == 0:
-
-        progress = (
-            (row - row_start)
-            / (row_end - row_start)
-            * 100
+        predictions.append(
+            pred_batch
         )
 
-        print(
-            f"Progress: {progress:.1f}% "
-            f"({row}/{row_end - 1})"
-        )
+
+    predictions = np.concatenate(
+        predictions
+    )
+
+
+    # ========================================================
+    # 19. CONVERT PREDICTIONS BACK TO ORIGINAL UNITS
+    # ========================================================
+
+    predictions *= TARGET_MULTIPLIER
+
+
+    # ========================================================
+    # 20. WRITE PREDICTIONS TO MAP
+    # ========================================================
+
+    prediction_index = 0
+
+    for row in block_rows:
+
+        for col in cols:
+
+            prediction_map[
+                row,
+                col
+            ] = predictions[
+                prediction_index
+            ]
+
+            prediction_index += 1
+
+
+    # ========================================================
+    # 21. PROGRESS
+    # ========================================================
+
+    processed += n_samples
+
+    percentage = (
+        processed /
+        total_predictions *
+        100.0
+    )
+
+    print(
+        f"Progress: "
+        f"{percentage:6.2f}% "
+        f"({processed:,} / "
+        f"{total_predictions:,})"
+    )
 
 
 # ============================================================
-# Prediction statistics
+# 22. PREDICTION STATISTICS
 # ============================================================
 
 valid_predictions = prediction_map[
-    ~np.isnan(prediction_map)
+    np.isfinite(prediction_map)
 ]
 
-print("\nPrediction completed.")
+
+print("\n============================================================")
+print("Prediction completed")
+print("============================================================")
+
+print(
+    "Valid predictions:",
+    len(valid_predictions)
+)
 
 print(
     "Minimum:",
@@ -458,33 +716,50 @@ print(
 print(
     "Median:",
     np.median(valid_predictions)
+
 )
 
 
 # ============================================================
-# Save prediction as GeoTIFF
+# 23. CREATE OUTPUT PROFILE
 # ============================================================
-
-print("\nSaving prediction map...")
 
 profile = reference.profile.copy()
 
 profile.update(
+    driver="GTiff",
     dtype="float32",
     count=1,
+    height=height,
+    width=width,
+    crs=reference_crs,
+    transform=reference_transform,
+    nodata=-9999,
     compress="deflate",
-    predictor=3,
-    nodata=-9999
+    predictor=3
 )
 
 
-# Replace NaN with NoData value
-output_array = np.where(
-    np.isnan(prediction_map),
-    -9999,
-    prediction_map
-).astype(np.float32)
+# ============================================================
+# 24. CONVERT NaN TO NoData
+# ============================================================
 
+output_array = np.where(
+    np.isfinite(prediction_map),
+    prediction_map,
+    -9999.0
+).astype(
+    np.float32
+)
+
+
+# ============================================================
+# 25. SAVE GEOTIFF
+# ============================================================
+
+print("\n============================================================")
+print("Saving prediction GeoTIFF")
+print("============================================================")
 
 with rio.open(
     output_path,
@@ -498,7 +773,56 @@ with rio.open(
     )
 
 
+# ============================================================
+# 26. CLOSE INPUT RASTERS
+# ============================================================
+
+for raster in rasters.values():
+
+    raster.close()
+
+
+# ============================================================
+# 27. FINAL MESSAGE
+# ============================================================
+
 print("\n============================================================")
-print("Prediction map saved successfully!")
+print("DONE")
 print("============================================================")
-print(output_path)
+
+print(
+    "Prediction map:"
+)
+
+print(
+    output_path
+)
+
+print("\nRaster properties:")
+
+print(
+    "Dimensions:",
+    height,
+    "x",
+    width
+)
+
+print(
+    "CRS:",
+    reference_crs
+)
+
+print(
+    "NoData:",
+    -9999
+)
+
+print(
+    "Prediction range:",
+    f"{np.min(valid_predictions):.4f}",
+    "to",
+    f"{np.max(valid_predictions):.4f}"
+)
+
+print("\nThe GeoTIFF is ready for QGIS / ArcGIS Pro.")
+

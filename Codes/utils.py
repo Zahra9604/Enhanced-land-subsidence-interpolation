@@ -6,6 +6,8 @@ import os
 import csv
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from scipy.spatial import cKDTree
+
 def align_raster(src_raster, ref_transform, ref_crs, ref_shape, ref_profile, output_raster):
     """Align src_raster to match the reference raster's grid, CRS, and shape."""
     
@@ -155,3 +157,121 @@ def calculate_metrics(y_true, y_pred):
     )
 
     return mse, rmse, mae, r2
+
+
+def idw_predict(
+    source_coordinates,
+    source_values,
+    target_coordinates,
+    power=2.0,
+    k=12
+):
+    """
+    Inverse Distance Weighting (IDW).
+
+    Parameters
+    ----------
+    source_coordinates : ndarray
+        Coordinates of known observations, shape (n, 2).
+
+    source_values : ndarray
+        Known values at source coordinates.
+
+    target_coordinates : ndarray
+        Coordinates where predictions are required.
+
+    power : float
+        IDW distance power.
+
+    k : int
+        Number of nearest neighbours.
+
+    Returns
+    -------
+    predictions : ndarray
+        IDW predictions.
+    """
+
+    source_coordinates = np.asarray(
+        source_coordinates,
+        dtype=np.float64
+    )
+
+    source_values = np.asarray(
+        source_values,
+        dtype=np.float64
+    )
+
+    target_coordinates = np.asarray(
+        target_coordinates,
+        dtype=np.float64
+    )
+
+    # KD-tree for efficient nearest-neighbour search
+    tree = cKDTree(source_coordinates)
+
+    k = min(k, len(source_coordinates))
+
+    distances, indices = tree.query(
+        target_coordinates,
+        k=k
+    )
+
+    # When k=1, make arrays 2-dimensional
+    if k == 1:
+
+        distances = distances[:, np.newaxis]
+        indices = indices[:, np.newaxis]
+
+    predictions = np.empty(
+        len(target_coordinates),
+        dtype=np.float64
+    )
+
+    # --------------------------------------------------------
+    # Handle exact coordinate matches
+    # --------------------------------------------------------
+
+    exact_match = np.any(
+        distances == 0,
+        axis=1
+    )
+
+    # Normal IDW prediction for non-exact points
+    non_exact = ~exact_match
+
+    if np.any(non_exact):
+
+        d = distances[non_exact]
+        idx = indices[non_exact]
+
+        weights = 1.0 / np.power(
+            d,
+            power
+        )
+
+        predictions[non_exact] = np.sum(
+            weights * source_values[idx],
+            axis=1
+        ) / np.sum(
+            weights,
+            axis=1
+        )
+
+    # Exact coordinate -> use observed value
+    if np.any(exact_match):
+
+        exact_rows = np.where(exact_match)[0]
+
+        for row in exact_rows:
+
+            zero_index = np.where(
+                distances[row] == 0
+            )[0][0]
+
+            predictions[row] = source_values[
+                indices[row, zero_index]
+            ]
+
+    return predictions
+

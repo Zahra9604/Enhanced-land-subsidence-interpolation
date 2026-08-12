@@ -1,295 +1,442 @@
 
+# ============================================================
+# Model and Traditional Interpolation Performance Comparison
+# ============================================================
+#
+# Models:
+#   1. CNN
+#   2. IDW
+#   3. Ordinary Kriging
+#   4. RBF
+#
+# Datasets:
+#   1. Training
+#   2. Testing
+#
+# Output:
+#
+# MODEL_INTERPOLATION_PERFORMANCE_COMPARISON.csv
+#
+# ============================================================
 
-# Required libraries
 
-import numpy as np
-from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
-from scipy import stats
-import pandas as pd
-import  pyproj
-import rasterio as rio
-import numpy as np
-from sklearn.model_selection import train_test_split
-import csv
-import tensorflow as tf
-from tensorflow import keras as ks
-from keras.models import Sequential
-from tensorflow.keras.optimizers import Adam, SGD, Adadelta
-from keras.regularizers import l2 , l1
-from keras import regularizers
-from sklearn.model_selection import train_test_split
-from keras.layers import Dense, Conv2D, Flatten, BatchNormalization, Activation, MaxPooling2D, Dropout, AveragePooling2D, GlobalMaxPooling2D
-import livelossplot
-import keras
-import tensorflow as tf
-import matplotlib.pyplot as plt
+# ============================================================
+# 1. Required libraries
+# ============================================================
+
 import os
-import json
-from tensorflow.keras.callbacks import ModelCheckpoint, LambdaCallback
-from tensorflow.keras.models import load_model
-from sklearn.preprocessing import MinMaxScaler
-import cv2
+import numpy as np
+import pandas as pd
+from utils import calculate_metrics
 
 
-#Load the true and Predicted values for training and testing sets
-y_train2 = pd.read_csv('y_train_true.csv')['true_values']
-y_test = pd.read_csv('y_test_true.csv')['true_values']
-#RMSE, R2 and MAE for the model, IDW, RBF and Kriging methods
-dftrain = pd.read_csv('pstrain.csv')
-pred_train=dftrain['Prediction']
+# ============================================================
+# 2. Paths
+# ============================================================
 
-dftest = pd.read_csv('pstest.csv')
-pred_test=dftest['Prediction']
+root = os.path.dirname(os.getcwd())
 
-# IDW
-df_train_I = pd.read_excel('IDW_train.xls')
-df_test_I  = pd.read_excel('IDW_test.xls')
+result_path = os.path.join(
+    root,
+    "results"
+)
 
-IDW_train = df_train_I['IDW']
-IDW_test  = df_test_I ['IDW']
 
-# RBF
-df_train_R = pd.read_excel('RBF_train.xls')
-df_test_R  = pd.read_excel('RBF_test.xls')
+train_file = os.path.join(
+    result_path,
+    "train_predictions_interpolation.csv"
+)
 
-RBF_train = df_train_I['RBF']
-RBF_test  = df_test_I ['RBF']
 
-#Kriging
-df_train_K = pd.read_excel('Kriging_train.xls')
-df_test_K  = pd.read_excel('Kriging_test.xls')
+test_file = os.path.join(
+    result_path,
+    "test_predictions_interpolation.csv"
+)
 
-kriging_train = df_train_I['kriging']
-kriging_test  = df_test_I ['krifing']
 
-"""# **Root Mean Squared Error (RMSE)**"""
+# ============================================================
+# 3. Check files
+# ============================================================
 
-# Function to calculate Root Mean Squared Error (RMSE)
-def calculate_rmse(y_true, y_pred):
-    return np.sqrt(mean_squared_error(y_true, y_pred))
-#_____________________________________ model RMSE__________________________________
+if not os.path.exists(train_file):
 
-# Calculate RMSE for training set
-rmse_train = calculate_rmse(y_train2 , pred_train)
+    raise FileNotFoundError(
+        f"\nTraining file not found:\n{train_file}"
+    )
 
-# Calculate RMSE for test set
-rmse_test = calculate_rmse(y_test , pred_test)
 
-print(f"Model RMSE for training set: {rmse_train}")
-print(f"Model RMSE for test set: {rmse_test}")
-# #_____________________________________ IDW RMSE__________________________________
+if not os.path.exists(test_file):
 
-# Calculate RMSE for training set
-rmse_trainI = calculate_rmse(y_train2 - IDW_train)
+    raise FileNotFoundError(
+        f"\nTesting file not found:\n{test_file}"
+    )
 
-# Calculate RMSE for test set
-rmse_testI  = calculate_rmse(y_test - IDW_test)
 
-print(f"Model RMSE for training set: {rmse_trainI}")
-print(f"Model RMSE for test set: {rmse_testI}")
+# ============================================================
+# 4. Load datasets
+# ============================================================
 
+print("\nLoading datasets...")
 
-#_____________________________________ RBF RMSE__________________________________
 
-# Calculate RMSE for training set
-rmse_trainR = calculate_rmse(y_train2 - RBF_train)
+train_dataset = pd.read_csv(
+    train_file
+)
 
-# Calculate RMSE for test set
-rmse_testR  = calculate_rmse(y_test - RBF_test)
 
-print(f"Model RMSE for training set: {rmse_trainR}")
-print(f"Model RMSE for test set: {rmse_testR}")
+test_dataset = pd.read_csv(
+    test_file
+)
 
 
-#_____________________________________ Kriging RMSE__________________________________
+print(
+    f"Training samples: {len(train_dataset):,}"
+)
 
 
-# Calculate RMSE for training set
-rmse_trainK = calculate_rmse(y_train2 - kriging_train)
+print(
+    f"Testing samples : {len(test_dataset):,}"
+)
 
-# Calculate RMSE for test set
-rmse_testK  = calculate_rmse(y_test - kriging_test)
 
-print(f"Model RMSE for training set: {rmse_trainK}")
-print(f"Model RMSE for test set: {rmse_testK}")
+# ============================================================
+# 5. Required columns
+# ============================================================
 
-"""# **R-squared (R2 score)**"""
+required_columns = [
+    "Ground_truth",
+    "Prediction",
+    "IDW_Prediction",
+    "Kriging_Prediction",
+    "RBF_Prediction"
+]
 
-# Function to calculate R-squared
-def calculate_R2(y_true, y_pred):
-    return r2_score(y_true, y_pred)
-#_____________________________________ model R2__________________________________
 
-# Assuming you have y_train_true, y_train_pred, y_test_true, y_test_pred loaded
+for column in required_columns:
 
-# Calculate R2 for training set
-R2_train = calculate_R2(y_train2 , pred_train)
+    if column not in train_dataset.columns:
 
-# Calculate R2 for test set
-R2_test = calculate_R2(y_test , pred_test)
+        raise ValueError(
+            f"Column '{column}' is missing "
+            f"from training dataset."
+        )
 
-print(f"Model R2 for training set: {R2_train}")
-print(f"Model R2 for test set: {R2_test}")
-#_____________________________________ IDW R2__________________________________
 
-# Calculate R2 for training set
-R2_trainI = calculate_R2(y_train2 - IDW_train)
+    if column not in test_dataset.columns:
 
-# Calculate R2 for test set
-R2_testI  = calculate_R2(y_test - IDW_test)
+        raise ValueError(
+            f"Column '{column}' is missing "
+            f"from testing dataset."
+        )
 
-print(f"IDW R2 for training set: {R2_trainI}")
-print(f"IDW R2 for test set: {R2_testI}")
 
+print(
+    "\nAll required columns found."
+)
 
-#_____________________________________ RBF R2__________________________________
 
-# Calculate R2 for training set
-R2_trainR = calculate_R2(y_train2 - RBF_train)
+# ============================================================
+# 6. Metric function
+# ============================================================
 
-# Calculate R2 for test set
-R2_testR  = calculate_R2(y_test - RBF_test)
+def get_metrics(
+    true_values,
+    predictions
+):
 
-print(f"RBF R2 for training set: {R2_trainR}")
-print(f"RBF R2 for test set: {R2_testR}")
+    true_values = np.asarray(
+        true_values,
+        dtype=np.float64
+    )
 
 
-#_____________________________________ Kriging R2__________________________________
+    predictions = np.asarray(
+        predictions,
+        dtype=np.float64
+    )
 
 
-# Calculate R2 for training set
-R2_trainK = calculate_R2(y_train2 - kriging_train)
+    # --------------------------------------------------------
+    # Remove NaN and infinite values
+    # --------------------------------------------------------
 
-# Calculate R2 for test set
-R2_testK  = calculate_R2(y_test - kriging_test)
+    valid = (
+        np.isfinite(true_values)
+        &
+        np.isfinite(predictions)
+    )
 
-print(f"kriging R2 for training set: {R2_trainK}")
-print(f"kriging R2 for test set: {R2_testK}")
 
-"""# **Mean Absolute Error (MAE)**"""
+    true_valid = (
+        true_values[
+            valid
+        ]
+    )
 
-# Function to calculate Mean Absolute Error (MAE)
-def calculate_MAE(y_true, y_pred):
-    return mean_absolute_error(y_true, y_pred)
-#_____________________________________ model MAE__________________________________
 
-# Assuming you have y_train_true, y_train_pred, y_test_true, y_test_pred loaded
+    prediction_valid = (
+        predictions[
+            valid
+        ]
+    )
 
-# Calculate MAE for training set
-MAE_train = calculate_MAE(y_train2 , pred_train)
 
-# Calculate MAE for test set
-MAE_test = calculate_MAE(y_test , pred_test)
+    if len(true_valid) == 0:
 
-print(f"Model MAE for training set: {MAE_train}")
-print(f"Model MAE for test set: {MAE_test}")
-#_____________________________________ IDW MAE__________________________________
+        return (
+            np.nan,
+            np.nan,
+            np.nan,
+            np.nan,
+            0
+        )
 
-# Calculate MAE for training set
-MAE_trainI = calculate_MAE(y_train2 - IDW_train)
 
-# Calculate MAE for test set
-MAE_testI  = calculate_MAE(y_test - IDW_test)
+    # --------------------------------------------------------
+    # Calculate metrics
+    # --------------------------------------------------------
 
-print(f"IDW MAE  for training set: {MAE_trainI}")
-print(f"IDW MAE  for test set: {MAE_testI}")
+    mse, rmse, mae, r2 = (
+        calculate_metrics(
+            true_valid,
+            prediction_valid
+        )
+    )
 
 
-#_____________________________________ RBF MAE __________________________________
+    return (
+        mse,
+        rmse,
+        mae,
+        r2,
+        len(true_valid)
+    )
 
-# Calculate MAE  for training set
-MAE _trainR = calculate_MAE (y_train2 - RBF_train)
 
-# Calculate MAE for test set
-MAE _testR  = calculate_MAE (y_test - RBF_test)
+# ============================================================
+# 7. Model definitions
+# ============================================================
 
-print(f"RBF MAE  for training set: {MAE _trainR}")
-print(f"RBF MAE  for test set: {MAE _testR}")
+models = {
 
+    "CNN": "Prediction",
 
-#_____________________________________ Kriging MAE __________________________________
+    "IDW": "IDW_Prediction",
 
+    "Kriging": "Kriging_Prediction",
 
-# Calculate MAE  for training set
-MAE _trainK = calculate_MAE (y_train2 - kriging_train)
+    "RBF": "RBF_Prediction"
 
-# Calculate MAE  for test set
-MAE _testK  = calculate_MAE (y_test - kriging_test)
+}
 
-print(f"kriging MAE  for training set: {MAE _trainK}")
-print(f"kriging MAE  for test set: {MAE _testK}")
 
-"""# **Perform statistical tests:**
+# ============================================================
+# 8. Calculate all performance metrics
+# ============================================================
 
-T-test or ANOVA to compare the performance metrics between the CNN model and Kriging.
-"""
+print("\n" + "=" * 90)
+print("CALCULATING MODEL PERFORMANCE")
+print("=" * 90)
 
-# Perform statistical tests (t-tests or ANOVA)
-#_______________________________Kriging_______________________________
 
-#  t-test for RMSE
-t_statistic, p_value = stats.ttest_ind(rmse_test, rmse_testK)
-print("\nStatistical significance test (t-test) for RMSE:")
-print(f"T-statistic: {t_statistic}")
-print(f"P-value: {p_value}")
+results = []
 
 
-#  t-test for R2
+# ============================================================
+# TRAINING PERFORMANCE
+# ============================================================
 
-t_statistic, p_value = stats.ttest_ind(R2_test, R2_testK)
-print("\nStatistical significance test (t-test) for R2:")
-print(f"T-statistic: {t_statistic}")
-print(f"P-value: {p_value}")
+print("\nTraining performance:")
 
-#  t-test for MAE
 
-t_statistic, p_value = stats.ttest_ind(MAE_test, rmse_testK)
-print("\nStatistical significance test (t-test) for MAE:")
-print(f"T-statistic: {t_statistic}")
-print(f"P-value: {p_value}")
+for model_name, prediction_column in models.items():
 
-#_______________________________IDW_______________________________
+    true_values = (
+        train_dataset[
+            "Ground_truth"
+        ]
+        .to_numpy(
+            dtype=np.float64
+        )
+    )
 
-#  t-test for RMSE
-t_statistic, p_value = stats.ttest_ind(rmse_test, rmse_testI)
-print("\nStatistical significance test (t-test) for RMSE:")
-print(f"T-statistic: {t_statistic}")
-print(f"P-value: {p_value}")
 
+    predictions = (
+        train_dataset[
+            prediction_column
+        ]
+        .to_numpy(
+            dtype=np.float64
+        )
+    )
 
-#  t-test for R2
 
-t_statistic, p_value = stats.ttest_ind(R2_test, R2_testI)
-print("\nStatistical significance test (t-test) for R2:")
-print(f"T-statistic: {t_statistic}")
-print(f"P-value: {p_value}")
+    (
+        mse,
+        rmse,
+        mae,
+        r2,
+        n
+    ) = get_metrics(
+        true_values,
+        predictions
+    )
 
-#  t-test for MAE
 
-t_statistic, p_value = stats.ttest_ind(MAE_test, MAE_testI)
-print("\nStatistical significance test (t-test) for MAE:")
-print(f"T-statistic: {t_statistic}")
-print(f"P-value: {p_value}")
+    results.append(
+        {
+            "Dataset": "Train",
+            "Method": model_name,
+            "N": n,
+            "MSE": mse,
+            "RMSE": rmse,
+            "MAE": mae,
+            "R2": r2
+        }
+    )
 
-#_______________________________RBF_______________________________
 
-#  t-test for RMSE
-t_statistic, p_value = stats.ttest_ind(rmse_test, rmse_testR)
-print("\nStatistical significance test (t-test) for RMSE:")
-print(f"T-statistic: {t_statistic}")
-print(f"P-value: {p_value}")
+    print(
+        f"{model_name:10s} | "
+        f"N = {n:,} | "
+        f"MSE = {mse:.6f} | "
+        f"RMSE = {rmse:.6f} | "
+        f"MAE = {mae:.6f} | "
+        f"R2 = {r2:.6f}"
+    )
 
 
-#  t-test for R2
+# ============================================================
+# TESTING PERFORMANCE
+# ============================================================
 
-t_statistic, p_value = stats.ttest_ind(R2_test, R2_testR)
-print("\nStatistical significance test (t-test) for R2:")
-print(f"T-statistic: {t_statistic}")
-print(f"P-value: {p_value}")
+print("\nTesting performance:")
 
-#  t-test for MAE
-MAE_testR = calculate_MAE(y_test , RBF_test)
-t_statistic, p_value = stats.ttest_ind(MAE_test, MAE_testR)
-print("\nStatistical significance test (t-test) for MAE:")
-print(f"T-statistic: {t_statistic}")
-print(f"P-value: {p_value}")
+
+for model_name, prediction_column in models.items():
+
+    true_values = (
+        test_dataset[
+            "Ground_truth"
+        ]
+        .to_numpy(
+            dtype=np.float64
+        )
+    )
+
+
+    predictions = (
+        test_dataset[
+            prediction_column
+        ]
+        .to_numpy(
+            dtype=np.float64
+        )
+    )
+
+
+    (
+        mse,
+        rmse,
+        mae,
+        r2,
+        n
+    ) = get_metrics(
+        true_values,
+        predictions
+    )
+
+
+    results.append(
+        {
+            "Dataset": "Test",
+            "Method": model_name,
+            "N": n,
+            "MSE": mse,
+            "RMSE": rmse,
+            "MAE": mae,
+            "R2": r2
+        }
+    )
+
+
+    print(
+        f"{model_name:10s} | "
+        f"N = {n:,} | "
+        f"MSE = {mse:.6f} | "
+        f"RMSE = {rmse:.6f} | "
+        f"MAE = {mae:.6f} | "
+        f"R2 = {r2:.6f}"
+    )
+
+
+# ============================================================
+# 9. Create one comparison DataFrame
+# ============================================================
+
+results = pd.DataFrame(
+    results
+)
+
+
+# ============================================================
+# 10. Round numerical values
+# ============================================================
+
+results[
+    [
+        "MSE",
+        "RMSE",
+        "MAE",
+        "R2"
+    ]
+] = results[
+    [
+        "MSE",
+        "RMSE",
+        "MAE",
+        "R2"
+    ]
+].round(6)
+
+
+# ============================================================
+# 11. Display final comparison
+# ============================================================
+
+print("\n" + "=" * 100)
+print("MODEL / INTERPOLATION PERFORMANCE COMPARISON")
+print("=" * 100)
+
+
+print(
+    results.to_string(
+        index=False
+    )
+)
+
+
+# ============================================================
+# 12. Save ONE CSV containing train + test performance
+# ============================================================
+
+output_file = os.path.join(
+    result_path,
+    "MODEL_INTERPOLATION_PERFORMANCE_COMPARISON.csv"
+)
+
+
+results.to_csv(
+    output_file,
+    index=False
+)
+
+
+# ============================================================
+# 13. Print output path
+# ============================================================
+
+print("\n" + "=" * 100)
+print("RESULTS SAVED")
+print("=" * 100)
+
